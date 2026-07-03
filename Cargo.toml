@@ -3,7 +3,9 @@ name = "cosmic-nas-indicator"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "COSMIC panel applet showing NAS connectivity as colored text"
+description = "COSMIC panel applet showing NAS connectivity/mount status as colored text"
+repository = "https://github.com/sbj-ee/cosmic-nas-indicator"
+readme = "README.md"
 
 [dependencies]
 libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false, features = ["applet", "tokio", "wayland"] }
@@ -12,3 +14,26 @@ tokio = { version = "1", features = ["net", "time", "process"] }
 [profile.release]
 lto = "thin"
 strip = true
+
+# Packaging metadata for `cargo deb` (https://github.com/kornelski/cargo-deb).
+# Build with: cargo deb
+[package.metadata.deb]
+maintainer = "Stephen B. Johnson <49662809+sbj-ee@users.noreply.github.com>"
+copyright = "2026 Stephen B. Johnson"
+license-file = ["LICENSE", "0"]
+extended-description = """
+A COSMIC panel applet that displays NAS status as colored text: green when the
+SMB share is mounted, orange when the NAS is reachable but not mounted, and red
+when it is unreachable. Includes a hover tooltip with connection details and a
+right-click menu to mount/unmount the share, adjust font size, and edit
+settings."""
+section = "utils"
+priority = "optional"
+# cifs-utils provides mount.cifs, required for the Connect/Disconnect feature.
+depends = "$auto, cifs-utils"
+assets = [
+    ["target/release/cosmic-nas-indicator", "usr/bin/", "755"],
+    ["data/io.github.sbj_ee.CosmicNasIndicator.desktop", "usr/share/applications/", "644"],
+    ["README.md", "usr/share/doc/cosmic-nas-indicator/README.md", "644"],
+    ["LICENSE", "usr/share/doc/cosmic-nas-indicator/LICENSE", "644"],
+]

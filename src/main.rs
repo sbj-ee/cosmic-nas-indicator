@@ -7,22 +7,30 @@ use cosmic::iced::{time, Alignment, Color, Length, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::{Application, Element};
 
-/// Fallback defaults, overridable via ~/.config/cosmic-nas-indicator/config.
-const DEFAULT_HOST: &str = "SGIAB-NAS.local";
+/// Fallback defaults, overridable via ~/.config/cosmic-nas-indicator/config or
+/// the in-applet settings panel. The host is intentionally empty so a fresh
+/// install starts in an "unconfigured" state rather than probing a stranger's
+/// hostname.
+const DEFAULT_HOST: &str = "";
 const DEFAULT_PORT: u16 = 445;
 const DEFAULT_INTERVAL_SECS: u64 = 10;
 const CONNECT_TIMEOUT_SECS: u64 = 3;
 
-/// Font-size bounds for the panel label when the user overrides sizing via the
-/// right-click menu. `DEFAULT_FONT_SIZE` is the starting point when no explicit
-/// size has been chosen yet.
+/// Font-size handling for the panel label when the user overrides sizing via
+/// the right-click menu. `DEFAULT_FONT_SIZE` is the starting point when no
+/// explicit size has been chosen yet. The size can only be nudged
+/// `FONT_STEPS` increments of `FONT_STEP` in either direction from the default.
 const DEFAULT_FONT_SIZE: f32 = 14.0;
-const MIN_FONT_SIZE: f32 = 8.0;
-const MAX_FONT_SIZE: f32 = 48.0;
+const FONT_STEP: f32 = 2.0;
+const FONT_STEPS: f32 = 2.0;
+const MIN_FONT_SIZE: f32 = DEFAULT_FONT_SIZE - FONT_STEP * FONT_STEPS;
+const MAX_FONT_SIZE: f32 = DEFAULT_FONT_SIZE + FONT_STEP * FONT_STEPS;
 
 const GREEN: Color = Color::from_rgb(0.18, 0.80, 0.25);
 const ORANGE: Color = Color::from_rgb(1.0, 0.58, 0.05);
 const RED: Color = Color::from_rgb(0.90, 0.16, 0.16);
+/// Neutral color used before the applet has been configured.
+const GREY: Color = Color::from_rgb(0.6, 0.6, 0.6);
 
 fn main() -> cosmic::iced::Result {
     cosmic::applet::run::<NasIndicator>(())
@@ -106,28 +114,58 @@ impl Config {
         config
     }
 
-    /// Persists the current `font_size` back to the config file, preserving any
-    /// other lines (host, port, comments, etc.) already present.
-    fn save_font_size(&self) {
+    /// Whether the applet has enough configuration to do anything useful (a
+    /// non-empty host to probe).
+    fn is_configured(&self) -> bool {
+        !self.host.trim().is_empty()
+    }
+
+    /// Persists the full configuration back to the config file, updating known
+    /// keys in place while preserving comments and any unrecognized lines.
+    fn save(&self) {
         let path = dirs_config_path();
-        let mut lines: Vec<String> = std::fs::read_to_string(&path)
-            .map(|c| c.lines().map(str::to_string).collect())
-            .unwrap_or_default();
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
 
-        lines.retain(|line| {
-            line.split_once('=')
-                .map(|(key, _)| key.trim() != "font_size")
-                .unwrap_or(true)
-        });
+        // Desired value for each known key. `None` means the key should be
+        // absent from the file entirely.
+        let desired: [(&str, Option<String>); 8] = [
+            ("host", non_empty(self.host.trim()).map(|s| s.to_string())),
+            ("port", Some(self.port.to_string())),
+            ("interval_secs", Some(self.interval_secs.to_string())),
+            ("font_size", self.font_size.map(|s| s.to_string())),
+            ("share", self.share.clone()),
+            ("mount_point", self.mount_point.clone()),
+            ("mount_options", self.mount_options.clone()),
+            ("use_pkexec", Some(self.use_pkexec.to_string())),
+        ];
 
-        if let Some(size) = self.font_size {
-            lines.push(format!("font_size = {size}"));
+        let mut seen: Vec<&str> = Vec::new();
+        let mut out: Vec<String> = Vec::new();
+        for line in existing.lines() {
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim();
+                if let Some((k, val)) = desired.iter().find(|(dk, _)| *dk == key) {
+                    seen.push(*k);
+                    if let Some(v) = val {
+                        out.push(format!("{k} = {v}"));
+                    }
+                    continue;
+                }
+            }
+            out.push(line.to_string());
+        }
+        for (k, val) in &desired {
+            if !seen.contains(k) {
+                if let Some(v) = val {
+                    out.push(format!("{k} = {v}"));
+                }
+            }
         }
 
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(path, lines.join("\n") + "\n");
+        let _ = std::fs::write(path, out.join("\n") + "\n");
     }
 
     /// The `mount -t cifs` source for the configured share, if any. A bare
@@ -154,6 +192,32 @@ fn non_empty(value: &str) -> Option<String> {
         None
     } else {
         Some(value.to_string())
+    }
+}
+
+/// Whether the CIFS mount helper (`mount.cifs` from the `cifs-utils` package)
+/// is installed. Without it, `mount -t cifs` fails with an opaque error.
+fn mount_cifs_available() -> bool {
+    ["/sbin/mount.cifs", "/usr/sbin/mount.cifs", "/bin/mount.cifs"]
+        .iter()
+        .any(|p| std::path::Path::new(p).exists())
+}
+
+/// Runs a prepared mount/umount command, returning `None` on success or a
+/// short human-readable error message on failure.
+async fn run_mount_command(mut cmd: tokio::process::Command, verb: &str) -> Option<String> {
+    match cmd.output().await {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let msg = stderr
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("command failed");
+            Some(format!("{verb} failed: {msg}"))
+        }
+        Err(e) => Some(format!("could not run {verb}: {e}")),
     }
 }
 
@@ -216,12 +280,44 @@ async fn check_nas(host: String, port: u16, mount_point: Option<String>) -> Stat
     }
 }
 
+/// Editable string buffers backing the in-applet settings form.
+#[derive(Debug, Clone, Default)]
+struct SettingsForm {
+    host: String,
+    port: String,
+    interval_secs: String,
+    share: String,
+    mount_point: String,
+    mount_options: String,
+    use_pkexec: bool,
+}
+
+impl SettingsForm {
+    fn from_config(config: &Config) -> Self {
+        SettingsForm {
+            host: config.host.clone(),
+            port: config.port.to_string(),
+            interval_secs: config.interval_secs.to_string(),
+            share: config.share.clone().unwrap_or_default(),
+            mount_point: config.mount_point.clone().unwrap_or_default(),
+            mount_options: config.mount_options.clone().unwrap_or_default(),
+            use_pkexec: config.use_pkexec,
+        }
+    }
+}
+
 struct NasIndicator {
     core: Core,
     config: Config,
     status: Status,
     /// The currently open right-click menu popup, if any.
     popup: Option<Id>,
+    /// When true, the popup shows the settings form instead of the menu.
+    editing: bool,
+    /// Buffers for the settings form while editing.
+    form: SettingsForm,
+    /// Last mount/unmount error to surface to the user, if any.
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,12 +337,32 @@ enum Message {
     Connect,
     /// Unmount the configured SMB share.
     Disconnect,
+    /// Result of a mount/unmount attempt: `None` on success, `Some(err)` on
+    /// failure.
+    MountDone(Option<String>),
+    /// Open the settings form in the popup.
+    OpenSettings,
+    /// Discard edits and return to the menu.
+    CancelSettings,
+    /// Persist the settings form and return to the menu.
+    SaveSettings,
+    /// Edits to individual settings-form fields.
+    EditHost(String),
+    EditPort(String),
+    EditInterval(String),
+    EditShare(String),
+    EditMountPoint(String),
+    EditMountOptions(String),
+    EditPkexec(bool),
     /// Quit the applet.
     Exit,
 }
 
 impl NasIndicator {
     fn check_task(&self) -> Task<Message> {
+        if !self.config.is_configured() {
+            return Task::none();
+        }
         let host = self.config.host.clone();
         let port = self.config.port;
         let mount_point = self.config.mount_point.clone();
@@ -256,13 +372,20 @@ impl NasIndicator {
     }
 
     /// Runs `mount` (via pkexec when configured) for the configured share, then
-    /// re-checks status.
+    /// re-checks status. Reports failures via `Message::MountDone`.
     fn mount_task(&self) -> Task<Message> {
         let (Some(source), Some(mount_point)) =
             (self.config.mount_source(), self.config.mount_point.clone())
         else {
             return Task::none();
         };
+        if !mount_cifs_available() {
+            return cosmic::task::future(async {
+                Message::MountDone(Some(
+                    "cifs-utils not installed (mount.cifs missing)".to_string(),
+                ))
+            });
+        }
         let options = self.config.mount_options.clone();
         let use_pkexec = self.config.use_pkexec;
         cosmic::task::future(async move {
@@ -277,13 +400,12 @@ impl NasIndicator {
             if let Some(opts) = options {
                 cmd.arg("-o").arg(opts);
             }
-            let _ = cmd.status().await;
-            Message::Tick
+            Message::MountDone(run_mount_command(cmd, "mount").await)
         })
     }
 
     /// Runs `umount` (via pkexec when configured) for the configured mount
-    /// point, then re-checks status.
+    /// point, then re-checks status. Reports failures via `Message::MountDone`.
     fn unmount_task(&self) -> Task<Message> {
         let Some(mount_point) = self.config.mount_point.clone() else {
             return Task::none();
@@ -298,9 +420,26 @@ impl NasIndicator {
                 tokio::process::Command::new("umount")
             };
             cmd.arg(&mount_point);
-            let _ = cmd.status().await;
-            Message::Tick
+            Message::MountDone(run_mount_command(cmd, "umount").await)
         })
+    }
+
+    /// Parses the settings form into the config and persists it.
+    fn apply_settings(&mut self) {
+        self.config.host = self.form.host.trim().to_string();
+        if let Ok(port) = self.form.port.trim().parse::<u16>() {
+            if port != 0 {
+                self.config.port = port;
+            }
+        }
+        if let Ok(secs) = self.form.interval_secs.trim().parse::<u64>() {
+            self.config.interval_secs = secs.max(2);
+        }
+        self.config.share = non_empty(self.form.share.trim());
+        self.config.mount_point = non_empty(self.form.mount_point.trim());
+        self.config.mount_options = non_empty(self.form.mount_options.trim());
+        self.config.use_pkexec = self.form.use_pkexec;
+        self.config.save();
     }
 
     /// Task that destroys the context-menu popup if it is currently open.
@@ -314,10 +453,13 @@ impl NasIndicator {
         }
     }
 
-    /// One-line status summary that matches the label color: mounted (green),
-    /// reachable-but-not-mounted (orange), or unreachable (red).
+    /// One-line status summary that matches the label color: unconfigured
+    /// (grey), mounted (green), reachable-but-not-mounted (orange), or
+    /// unreachable (red).
     fn status_summary(&self) -> &'static str {
-        if !self.status.connected {
+        if !self.config.is_configured() {
+            "NAS — Not configured"
+        } else if !self.status.connected {
             "NAS — Unreachable"
         } else if !self.config.is_mountable() {
             "NAS — Connected"
@@ -330,11 +472,16 @@ impl NasIndicator {
 
     /// Multi-line text shown in the hover tooltip.
     fn tooltip_text(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(self.status_summary().to_string());
+
+        if !self.config.is_configured() {
+            lines.push("Right-click → Settings to configure".to_string());
+            return lines.join("\n");
+        }
+
         let host = &self.config.host;
         let port = self.config.port;
-        let mut lines = Vec::new();
-
-        lines.push(self.status_summary().to_string());
         lines.push(format!("Host: {host}:{port}"));
 
         if let Some(addr) = self.status.addr {
@@ -358,12 +505,25 @@ impl NasIndicator {
 
         lines.push(format!("Checked every {}s", self.config.interval_secs));
 
+        if let Some(err) = &self.last_error {
+            lines.push(format!("⚠ {err}"));
+        }
+
         lines.join("\n")
     }
 
     /// The effective font size currently applied to the panel label.
     fn current_font_size(&self) -> f32 {
         self.config.font_size.unwrap_or(DEFAULT_FONT_SIZE)
+    }
+
+    /// The popup body, dispatching between the settings form and the menu.
+    fn popup_body(&self) -> Element<'_, Message> {
+        if self.editing {
+            self.settings_view()
+        } else {
+            self.menu_view()
+        }
     }
 
     /// Contents of the right-click context menu popup.
@@ -377,11 +537,20 @@ impl NasIndicator {
 
         let mut menu = Column::new()
             .padding([8, 0])
-            .push(padded_control(text::heading(header)))
-            .push(padded_control(text::caption(format!(
+            .push(padded_control(text::heading(header)));
+
+        if self.config.is_configured() {
+            menu = menu.push(padded_control(text::caption(format!(
                 "{}:{}",
                 self.config.host, self.config.port
             ))));
+        }
+
+        if let Some(err) = &self.last_error {
+            menu = menu.push(padded_control(
+                text::caption(format!("⚠ {err}")).class(cosmic::style::Text::Color(ORANGE)),
+            ));
+        }
 
         // Connect / disconnect (mount / unmount) — only when a share and mount
         // point are configured.
@@ -394,13 +563,92 @@ impl NasIndicator {
             };
         }
 
+        let current = self.current_font_size();
+        let can_increase = current < MAX_FONT_SIZE;
+        let can_decrease = current > MIN_FONT_SIZE;
+
         menu.push(padded_control(divider::horizontal::default()))
+            .push(menu_button(text::body("Settings…")).on_press(Message::OpenSettings))
+            .push(padded_control(divider::horizontal::default()))
             .push(padded_control(text::caption(font_label)))
-            .push(menu_button(text::body("Increase font size")).on_press(Message::FontDelta(1.0)))
-            .push(menu_button(text::body("Decrease font size")).on_press(Message::FontDelta(-1.0)))
+            .push(
+                menu_button(text::body("Increase font size"))
+                    .on_press_maybe(can_increase.then_some(Message::FontDelta(FONT_STEP))),
+            )
+            .push(
+                menu_button(text::body("Decrease font size"))
+                    .on_press_maybe(can_decrease.then_some(Message::FontDelta(-FONT_STEP))),
+            )
             .push(menu_button(text::body("Reset font size")).on_press(Message::FontReset))
             .push(padded_control(divider::horizontal::default()))
             .push(menu_button(text::body("Exit")).on_press(Message::Exit))
+            .into()
+    }
+
+    /// The settings form shown in the popup.
+    fn settings_view(&self) -> Element<'_, Message> {
+        use cosmic::applet::{menu_button, padded_control};
+        use cosmic::widget::{divider, text, text_input, toggler, Column};
+
+        let field = |label: &str, placeholder: &str, value: &str, on_input: fn(String) -> Message| {
+            Column::new()
+                .spacing(2)
+                .push(text::caption(label.to_string()))
+                .push(text_input(placeholder.to_string(), value.to_string()).on_input(on_input))
+        };
+
+        Column::new()
+            .padding([8, 0])
+            .spacing(4)
+            .push(padded_control(text::heading("NAS Settings")))
+            .push(padded_control(field(
+                "Host",
+                "e.g. nas.local or 192.168.1.10",
+                &self.form.host,
+                Message::EditHost,
+            )))
+            .push(padded_control(field(
+                "Port",
+                "445",
+                &self.form.port,
+                Message::EditPort,
+            )))
+            .push(padded_control(field(
+                "Check interval (seconds)",
+                "10",
+                &self.form.interval_secs,
+                Message::EditInterval,
+            )))
+            .push(padded_control(divider::horizontal::default()))
+            .push(padded_control(text::caption(
+                "Mounting (optional)".to_string(),
+            )))
+            .push(padded_control(field(
+                "Share",
+                "share name or //host/share",
+                &self.form.share,
+                Message::EditShare,
+            )))
+            .push(padded_control(field(
+                "Mount point",
+                "/mnt/nas",
+                &self.form.mount_point,
+                Message::EditMountPoint,
+            )))
+            .push(padded_control(field(
+                "Mount options",
+                "credentials=/path,uid=1000",
+                &self.form.mount_options,
+                Message::EditMountOptions,
+            )))
+            .push(padded_control(
+                toggler(self.form.use_pkexec)
+                    .label("Use pkexec (auth prompt)".to_string())
+                    .on_toggle(Message::EditPkexec),
+            ))
+            .push(padded_control(divider::horizontal::default()))
+            .push(menu_button(text::body("Save")).on_press(Message::SaveSettings))
+            .push(menu_button(text::body("Cancel")).on_press(Message::CancelSettings))
             .into()
     }
 }
@@ -420,11 +668,15 @@ impl Application for NasIndicator {
     }
 
     fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
+        let config = Config::load();
         let app = NasIndicator {
             core,
-            config: Config::load(),
+            config,
             status: Status::default(),
             popup: None,
+            editing: false,
+            form: SettingsForm::default(),
+            last_error: None,
         };
         let initial_check = app.check_task();
         (app, initial_check)
@@ -447,6 +699,7 @@ impl Application for NasIndicator {
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
+                    self.editing = false;
                 }
                 Task::none()
             }
@@ -454,21 +707,70 @@ impl Application for NasIndicator {
                 let new_size =
                     (self.current_font_size() + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
                 self.config.font_size = Some(new_size);
-                self.config.save_font_size();
+                self.config.save();
                 Task::none()
             }
             Message::FontReset => {
                 self.config.font_size = None;
-                self.config.save_font_size();
+                self.config.save();
                 Task::none()
             }
             Message::Connect => {
+                self.last_error = None;
                 let close = self.close_popup_task();
                 Task::batch([close, self.mount_task()])
             }
             Message::Disconnect => {
+                self.last_error = None;
                 let close = self.close_popup_task();
                 Task::batch([close, self.unmount_task()])
+            }
+            Message::MountDone(result) => {
+                self.last_error = result;
+                self.check_task()
+            }
+            Message::OpenSettings => {
+                self.form = SettingsForm::from_config(&self.config);
+                self.editing = true;
+                Task::none()
+            }
+            Message::CancelSettings => {
+                self.editing = false;
+                Task::none()
+            }
+            Message::SaveSettings => {
+                self.apply_settings();
+                self.editing = false;
+                let close = self.close_popup_task();
+                Task::batch([close, self.check_task()])
+            }
+            Message::EditHost(v) => {
+                self.form.host = v;
+                Task::none()
+            }
+            Message::EditPort(v) => {
+                self.form.port = v;
+                Task::none()
+            }
+            Message::EditInterval(v) => {
+                self.form.interval_secs = v;
+                Task::none()
+            }
+            Message::EditShare(v) => {
+                self.form.share = v;
+                Task::none()
+            }
+            Message::EditMountPoint(v) => {
+                self.form.mount_point = v;
+                Task::none()
+            }
+            Message::EditMountOptions(v) => {
+                self.form.mount_options = v;
+                Task::none()
+            }
+            Message::EditPkexec(v) => {
+                self.form.use_pkexec = v;
+                Task::none()
             }
             Message::Exit => {
                 std::process::exit(0);
@@ -481,11 +783,13 @@ impl Application for NasIndicator {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        // Red when the NAS isn't even reachable, green when the share is
-        // mounted, orange when reachable but not mounted. When no mount is
-        // configured, there is no "mounted" state, so reachability alone
+        // Grey before configuration, red when unreachable, green when the
+        // share is mounted, orange when reachable but not mounted. With no
+        // mount configured there is no "mounted" state, so reachability alone
         // toggles green/red.
-        let color = if !self.status.connected {
+        let color = if !self.config.is_configured() {
+            GREY
+        } else if !self.status.connected {
             RED
         } else if !self.config.is_mountable() || self.status.mounted {
             GREEN
@@ -545,15 +849,17 @@ impl Application for NasIndicator {
                     )
                 },
                 Some(Box::new(|state: &NasIndicator| {
-                    Element::from(state.core.applet.popup_container(state.menu_view()))
+                    Element::from(state.core.applet.popup_container(state.popup_body()))
                         .map(cosmic::Action::App)
                 })),
             ))
         };
 
-        cosmic::widget::mouse_area(tooltipped)
-            .on_right_press(right_click)
-            .into()
+        let area = cosmic::widget::mouse_area(tooltipped).on_right_press(right_click);
+
+        // Let the panel surface grow to fit the (possibly enlarged) label so
+        // wider text isn't clipped on the trailing edge.
+        applet.autosize_window(area).into()
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {

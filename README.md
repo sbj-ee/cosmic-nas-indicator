@@ -3,25 +3,39 @@
 A COSMIC panel applet that displays **NAS** as plain text in the toolbar,
 colored by status:
 
+- **grey** — not configured yet (set a host via Settings)
 - **green** — the NAS share is mounted
 - **orange** — the NAS is reachable but the share is not mounted
 - **red** — the NAS is not reachable at all
 
-Reachability is determined by attempting a TCP connection to the NAS
-(default: `SGIAB-NAS.local:445`, the SMB port) on a fixed interval. When no
-mount is configured (no `share`/`mount_point`), there is no "mounted" state,
-so the color is simply green when reachable and red when not.
+Reachability is determined by attempting a TCP connection to the NAS host on
+the SMB port (445 by default) on a fixed interval. When no mount is
+configured (no `share`/`mount_point`), there is no "mounted" state, so the
+color is simply green when reachable and red when not.
+
+On first run the applet is **unconfigured** (grey). Right-click →
+**Settings…** to set the host and, optionally, the share to mount.
 
 ## Interaction
 
 - **Hover** over the label to see a tooltip with NAS details (connection
-  status, host/port, resolved IP address, latency, and poll interval).
+  status, host/port, resolved IP address, latency, poll interval, and any
+  recent mount error).
 - **Right-click** the label for a context menu that lets you:
   - **Connect / Disconnect** — mount or unmount the configured SMB share
-    (only shown when `share` and `mount_point` are set; see below).
-  - Increase, decrease, or reset the label font size. Font size changes are
-    saved to the config file and persist across restarts.
+    (only shown when `share` and `mount_point` are set).
+  - **Settings…** — edit host, port, check interval, and mount options
+    directly in the popup; Save persists them to the config file.
+  - Increase, decrease, or reset the label font size (persisted).
   - Exit the applet.
+
+## Requirements
+
+- A COSMIC desktop / panel to host the applet.
+- **`cifs-utils`** — required only for the Connect/Disconnect (mount) feature;
+  provides the `mount.cifs` helper. On Debian/Ubuntu:
+  `sudo apt install cifs-utils`. If it is missing, the applet shows a clear
+  error when you try to connect.
 
 ## Build and install
 
@@ -36,13 +50,28 @@ This installs the binary to `~/.local/bin` and the applet desktop entry to
 Then add it to the panel: **Settings → Desktop → Panel → Configure panel
 applets → Add applet → NAS Indicator**.
 
+### Building a .deb package
+
+With [`cargo-deb`](https://github.com/kornelski/cargo-deb) installed
+(`cargo install cargo-deb`):
+
+```sh
+cargo deb
+```
+
+The resulting package (in `target/debian/`) installs the binary to
+`/usr/bin`, the desktop entry to `/usr/share/applications`, and declares a
+dependency on `cifs-utils`.
+
 ## Configuration
 
-Optional file at `~/.config/cosmic-nas-indicator/config` with `KEY=VALUE`
-lines:
+The easiest way to configure the applet is the **Settings…** panel in the
+right-click menu. Settings are stored in
+`~/.config/cosmic-nas-indicator/config` as `KEY=VALUE` lines, which you can
+also edit by hand:
 
 ```
-host=SGIAB-NAS.local
+host=nas.local
 port=445
 interval_secs=10
 font_size=14
@@ -54,11 +83,11 @@ mount_options=credentials=/home/me/.smbcredentials,uid=1000,gid=1000
 use_pkexec=true
 ```
 
-All keys are optional; unspecified keys use the defaults shown above.
-When `font_size` is omitted, the label uses the panel-derived default
-sizing. It is written automatically when you adjust the font size from the
-right-click menu. Restart the applet (or the panel) after manually changing
-the config.
+All keys are optional; unspecified keys use built-in defaults (the host is
+empty by default, i.e. unconfigured). When `font_size` is omitted, the label
+uses the panel-derived default sizing. Restart the applet (or the panel)
+after editing the config by hand; changes made via Settings… apply
+immediately.
 
 ### Mounting keys
 
