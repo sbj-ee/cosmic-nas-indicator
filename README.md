@@ -37,11 +37,24 @@ On first run the applet is **unconfigured** (grey). Right-click →
   `sudo apt install cifs-utils`. If it is missing, the applet shows a clear
   error when you try to connect.
 
-## Build and install
+## Install
+
+### From a release (Debian/Ubuntu)
+
+Download the latest `.deb` from the
+[Releases](https://github.com/sbj-ee/cosmic-nas-indicator/releases) page and
+install it with `apt` (so the `cifs-utils` dependency is resolved
+automatically):
+
+```sh
+sudo apt install ./cosmic-nas-indicator_1.0.0-1_amd64.deb
+```
+
+### From source
 
 ```sh
 cargo build --release
-just install   # or: make install
+just install
 ```
 
 This installs the binary to `~/.local/bin` and the applet desktop entry to
@@ -50,7 +63,7 @@ This installs the binary to `~/.local/bin` and the applet desktop entry to
 Then add it to the panel: **Settings → Desktop → Panel → Configure panel
 applets → Add applet → NAS Indicator**.
 
-### Building a .deb package
+### Building a .deb package yourself
 
 With [`cargo-deb`](https://github.com/kornelski/cargo-deb) installed
 (`cargo install cargo-deb`):
