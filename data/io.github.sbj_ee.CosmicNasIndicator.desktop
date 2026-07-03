@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=NAS Indicator
+Comment=Shows NAS connectivity in the COSMIC panel
+Type=Application
+Exec=cosmic-nas-indicator
+Icon=network-server-symbolic
+Terminal=false
+NoDisplay=true
+X-CosmicApplet=true
+Categories=COSMIC;

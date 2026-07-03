@@ -1,0 +1,14 @@
+[package]
+name = "cosmic-nas-indicator"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "COSMIC panel applet showing NAS connectivity as colored text"
+
+[dependencies]
+libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false, features = ["applet", "tokio", "wayland"] }
+tokio = { version = "1", features = ["net", "time", "process"] }
+
+[profile.release]
+lto = "thin"
+strip = true
