@@ -1,1 +1,8 @@
 /target
+
+# Never commit SMB/NAS credentials or local applet config
+.smbcredentials
+*.smbcredentials
+*.cred
+credentials
+config
