@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="56" viewBox="0 0 900 56">
+  <rect width="900" height="56" fill="#1e1e1e"/>
+  <rect x="0.5" y="0.5" width="899" height="55" fill="none" stroke="#333" stroke-width="1"/>
+  <text x="24" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Workspaces</text>
+  <text x="620" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">12:30 PM</text>
+  <text x="700" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Wi-Fi</text>
+  <text x="760" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Audio</text>
+  <text x="820" y="34" font-family="Inter, Cantarell, sans-serif" font-size="14" font-weight="600" fill="#e62929">NAS</text>
+</svg>

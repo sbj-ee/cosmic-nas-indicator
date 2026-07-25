@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="220" viewBox="0 0 900 220">
+  <rect width="900" height="56" fill="#1e1e1e"/>
+  <text x="24" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Workspaces</text>
+  <text x="620" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">12:30 PM</text>
+  <text x="700" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Wi-Fi</text>
+  <text x="760" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Audio</text>
+  <text x="820" y="34" font-family="Inter, Cantarell, sans-serif" font-size="14" font-weight="600" fill="#2ecc40">NAS</text>
+
+  <rect x="640" y="64" width="250" height="140" rx="8" fill="#2a2a2a" stroke="#444" stroke-width="1"/>
+  <text x="656" y="88" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">NAS - Mounted</text>
+  <text x="656" y="108" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#bbb">Host: SGIAB-NAS.local:445</text>
+  <text x="656" y="126" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#bbb">Address: 192.168.8.210</text>
+  <text x="656" y="144" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#bbb">Latency: 5.1 ms</text>
+  <text x="656" y="162" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#bbb">Mounted at /mnt/nas</text>
+  <text x="656" y="180" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#bbb">Checked every 10s</text>
+</svg>

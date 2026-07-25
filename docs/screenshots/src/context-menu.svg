@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360">
+  <rect width="900" height="56" fill="#1e1e1e"/>
+  <text x="24" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Workspaces</text>
+  <text x="620" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">12:30 PM</text>
+  <text x="700" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Wi-Fi</text>
+  <text x="760" y="34" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#888">Audio</text>
+  <text x="820" y="34" font-family="Inter, Cantarell, sans-serif" font-size="14" font-weight="600" fill="#ff940d">NAS</text>
+
+  <rect x="520" y="64" width="360" height="280" rx="10" fill="#2a2a2a" stroke="#444" stroke-width="1"/>
+  <text x="536" y="92" font-family="Inter, Cantarell, sans-serif" font-size="15" font-weight="600" fill="#f0f0f0">NAS - Reachable, not mounted</text>
+  <text x="536" y="114" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#999">SGIAB-NAS.local:445</text>
+  <line x1="536" y1="126" x2="864" y2="126" stroke="#444" stroke-width="1"/>
+  <text x="536" y="152" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">Connect (mount)</text>
+  <line x1="536" y1="164" x2="864" y2="164" stroke="#444" stroke-width="1"/>
+  <text x="536" y="190" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">Settings...</text>
+  <line x1="536" y1="202" x2="864" y2="202" stroke="#444" stroke-width="1"/>
+  <text x="536" y="224" font-family="Inter, Cantarell, sans-serif" font-size="12" fill="#999">Font size: 14</text>
+  <text x="536" y="248" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">Increase font size</text>
+  <text x="536" y="272" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">Decrease font size</text>
+  <text x="536" y="296" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">Reset font size</text>
+  <line x1="536" y1="308" x2="864" y2="308" stroke="#444" stroke-width="1"/>
+  <text x="536" y="332" font-family="Inter, Cantarell, sans-serif" font-size="13" fill="#f0f0f0">Exit</text>
+</svg>
