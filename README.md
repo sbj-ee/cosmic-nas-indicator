@@ -16,6 +16,43 @@ color is simply green when reachable and red when not.
 On first run the applet is **unconfigured** (grey). Right-click →
 **Settings…** to set the host and, optionally, the share to mount.
 
+## Screenshots
+
+Representative previews of the applet in the COSMIC panel. PNGs are generated
+from the SVG sources in `docs/screenshots/src/` via `scripts/generate-screenshots.sh`.
+
+### Status colors
+
+**Mounted (green)**
+
+![NAS mounted](docs/screenshots/panel-green.png)
+
+**Reachable, not mounted (orange)**
+
+![NAS reachable](docs/screenshots/panel-orange.png)
+
+**Unreachable (red)**
+
+![NAS unreachable](docs/screenshots/panel-red.png)
+
+**Not configured (grey)**
+
+![NAS unconfigured](docs/screenshots/panel-grey.png)
+
+### Interaction
+
+**Hover tooltip** — connection details and mount state:
+
+![Hover tooltip](docs/screenshots/tooltip.png)
+
+**Right-click menu** — mount/unmount, settings, font size, exit:
+
+![Context menu](docs/screenshots/context-menu.png)
+
+**Settings panel** — configure host, port, interval, and mount options:
+
+![Settings panel](docs/screenshots/settings.png)
+
 ## Interaction
 
 - **Hover** over the label to see a tooltip with NAS details (connection
