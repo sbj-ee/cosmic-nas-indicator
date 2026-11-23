@@ -173,5 +173,8 @@ cargo clippy --all-targets -- -D warnings
 Configuration parsing/saving and mount detection live in `src/config.rs` and
 `src/mounts.rs` and are unit-tested. CI (`.github/workflows/ci.yml`) runs
 clippy and the tests on Ubuntu for every push to `main` and every pull request.
-`libcosmic` is pinned to a specific git revision in `Cargo.toml`; bump the
-`rev` deliberately and run `cargo update -p libcosmic` to upgrade.
+`libcosmic` is pinned by the committed `Cargo.lock`, not by a `rev` in
+`Cargo.toml`: other COSMIC crates in the dependency tree (e.g.
+`cosmic-panel-config`) depend on libcosmic without a `rev`, and pinning one
+side splits it into two conflicting sources. CI builds with `--locked`; upgrade
+deliberately with `cargo update -p libcosmic` and commit the new lockfile.

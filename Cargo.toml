@@ -8,7 +8,7 @@ repository = "https://github.com/sbj-ee/cosmic-nas-indicator"
 readme = "README.md"
 
 [dependencies]
-libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "ee5d965983957271cf759fd76e3e4eed4f188d35", default-features = false, features = ["applet", "tokio", "wayland"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", default-features = false, features = ["applet", "tokio", "wayland"] }
 tokio = { version = "1", features = ["net", "time", "process"] }
 
 [profile.release]
