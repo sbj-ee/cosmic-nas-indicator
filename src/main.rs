@@ -1,3 +1,6 @@
+mod config;
+mod mounts;
+
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -7,24 +10,13 @@ use cosmic::iced::{time, Alignment, Color, Length, Subscription};
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::{Application, Element};
 
-/// Fallback defaults, overridable via ~/.config/cosmic-nas-indicator/config or
-/// the in-applet settings panel. The host is intentionally empty so a fresh
-/// install starts in an "unconfigured" state rather than probing a stranger's
-/// hostname.
-const DEFAULT_HOST: &str = "";
-const DEFAULT_PORT: u16 = 445;
-const DEFAULT_INTERVAL_SECS: u64 = 10;
-const CONNECT_TIMEOUT_SECS: u64 = 3;
+use config::{
+    non_empty, parse_interval, parse_port, Config, DEFAULT_FONT_SIZE, FONT_STEP, MAX_FONT_SIZE,
+    MIN_FONT_SIZE,
+};
 
-/// Font-size handling for the panel label when the user overrides sizing via
-/// the right-click menu. `DEFAULT_FONT_SIZE` is the starting point when no
-/// explicit size has been chosen yet. The size can only be nudged
-/// `FONT_STEPS` increments of `FONT_STEP` in either direction from the default.
-const DEFAULT_FONT_SIZE: f32 = 14.0;
-const FONT_STEP: f32 = 2.0;
-const FONT_STEPS: f32 = 2.0;
-const MIN_FONT_SIZE: f32 = DEFAULT_FONT_SIZE - FONT_STEP * FONT_STEPS;
-const MAX_FONT_SIZE: f32 = DEFAULT_FONT_SIZE + FONT_STEP * FONT_STEPS;
+/// Upper bound on one reachability probe (DNS lookup plus TCP connect).
+const CONNECT_TIMEOUT_SECS: u64 = 3;
 
 const GREEN: Color = Color::from_rgb(0.18, 0.80, 0.25);
 const ORANGE: Color = Color::from_rgb(1.0, 0.58, 0.05);
@@ -36,241 +28,41 @@ fn main() -> cosmic::iced::Result {
     cosmic::applet::run::<NasIndicator>(())
 }
 
-struct Config {
-    host: String,
-    port: u16,
-    interval_secs: u64,
-    /// Explicit panel label font size. `None` means "use the panel-derived
-    /// default sizing from libcosmic".
-    font_size: Option<f32>,
-    /// SMB share to mount. Either a full source like `//host/share` (or a
-    /// UNC-style `\\host\share`) or a bare share name, in which case the
-    /// source becomes `//<host>/<share>`.
-    share: Option<String>,
-    /// Local directory the share is mounted onto.
-    mount_point: Option<String>,
-    /// Extra options passed to `mount -o` (e.g. `credentials=/path,uid=1000`).
-    mount_options: Option<String>,
-    /// Run mount/umount through `pkexec` so a normal user gets a polkit auth
-    /// prompt. Set to `false` if you have an fstab `user` entry instead.
-    use_pkexec: bool,
-}
-
-impl Config {
-    /// Reads KEY=VALUE lines from ~/.config/cosmic-nas-indicator/config.
-    /// Recognized keys: host, port, interval_secs, font_size. Missing file or
-    /// keys fall back to the compiled-in defaults.
-    fn load() -> Self {
-        let mut config = Config {
-            host: DEFAULT_HOST.to_string(),
-            port: DEFAULT_PORT,
-            interval_secs: DEFAULT_INTERVAL_SECS,
-            font_size: None,
-            share: None,
-            mount_point: None,
-            mount_options: None,
-            use_pkexec: true,
-        };
-        let path = dirs_config_path();
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            for line in contents.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((key, value)) = line.split_once('=') {
-                    let (key, value) = (key.trim(), value.trim());
-                    match key {
-                        "host" => config.host = value.to_string(),
-                        "port" => {
-                            if let Ok(port) = value.parse() {
-                                config.port = port;
-                            }
-                        }
-                        "interval_secs" => {
-                            if let Ok(secs) = value.parse::<u64>() {
-                                config.interval_secs = secs.max(2);
-                            }
-                        }
-                        "font_size" => {
-                            if let Ok(size) = value.parse::<f32>() {
-                                config.font_size =
-                                    Some(size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
-                            }
-                        }
-                        "share" => config.share = non_empty(value),
-                        "mount_point" => config.mount_point = non_empty(value),
-                        "mount_options" => config.mount_options = non_empty(value),
-                        "use_pkexec" => {
-                            if let Ok(flag) = value.parse::<bool>() {
-                                config.use_pkexec = flag;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        config
-    }
-
-    /// Whether the applet has enough configuration to do anything useful (a
-    /// non-empty host to probe).
-    fn is_configured(&self) -> bool {
-        !self.host.trim().is_empty()
-    }
-
-    /// Persists the full configuration back to the config file, updating known
-    /// keys in place while preserving comments and any unrecognized lines.
-    fn save(&self) {
-        let path = dirs_config_path();
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-
-        // Desired value for each known key. `None` means the key should be
-        // absent from the file entirely.
-        let desired: [(&str, Option<String>); 8] = [
-            ("host", non_empty(self.host.trim()).map(|s| s.to_string())),
-            ("port", Some(self.port.to_string())),
-            ("interval_secs", Some(self.interval_secs.to_string())),
-            ("font_size", self.font_size.map(|s| s.to_string())),
-            ("share", self.share.clone()),
-            ("mount_point", self.mount_point.clone()),
-            ("mount_options", self.mount_options.clone()),
-            ("use_pkexec", Some(self.use_pkexec.to_string())),
-        ];
-
-        let mut seen: Vec<&str> = Vec::new();
-        let mut out: Vec<String> = Vec::new();
-        for line in existing.lines() {
-            if let Some((key, _)) = line.split_once('=') {
-                let key = key.trim();
-                if let Some((k, val)) = desired.iter().find(|(dk, _)| *dk == key) {
-                    seen.push(*k);
-                    if let Some(v) = val {
-                        out.push(format!("{k} = {v}"));
-                    }
-                    continue;
-                }
-            }
-            out.push(line.to_string());
-        }
-        for (k, val) in &desired {
-            if !seen.contains(k) {
-                if let Some(v) = val {
-                    out.push(format!("{k} = {v}"));
-                }
-            }
-        }
-
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(path, out.join("\n") + "\n");
-    }
-
-    /// The `mount -t cifs` source for the configured share, if any. A bare
-    /// share name is expanded to `//<host>/<share>`; a value already starting
-    /// with `//` or `\\` is used as-is (with backslashes normalized).
-    fn mount_source(&self) -> Option<String> {
-        let share = self.share.as_deref()?;
-        if share.starts_with("//") || share.starts_with(r"\\") {
-            Some(share.replace('\\', "/"))
-        } else {
-            Some(format!("//{}/{}", self.host, share.trim_start_matches('/')))
-        }
-    }
-
-    /// Whether both a share and a mount point are configured, so the
-    /// connect/disconnect menu item is meaningful.
-    fn is_mountable(&self) -> bool {
-        self.mount_source().is_some() && self.mount_point.is_some()
-    }
-}
-
-fn non_empty(value: &str) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
-}
-
-/// Whether the CIFS mount helper (`mount.cifs` from the `cifs-utils` package)
-/// is installed. Without it, `mount -t cifs` fails with an opaque error.
-fn mount_cifs_available() -> bool {
-    ["/sbin/mount.cifs", "/usr/sbin/mount.cifs", "/bin/mount.cifs"]
-        .iter()
-        .any(|p| std::path::Path::new(p).exists())
-}
-
-/// Runs a prepared mount/umount command, returning `None` on success or a
-/// short human-readable error message on failure.
-async fn run_mount_command(mut cmd: tokio::process::Command, verb: &str) -> Option<String> {
-    match cmd.output().await {
-        Ok(out) if out.status.success() => None,
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let msg = stderr
-                .lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .unwrap_or("command failed");
-            Some(format!("{verb} failed: {msg}"))
-        }
-        Err(e) => Some(format!("could not run {verb}: {e}")),
-    }
-}
-
-/// Returns true if `mount_point` currently appears as a mount target in
-/// /proc/mounts.
-fn is_mounted(mount_point: &str) -> bool {
-    // /proc/mounts encodes spaces as \040; normalize before comparing.
-    let target = mount_point.trim_end_matches('/');
-    std::fs::read_to_string("/proc/mounts")
-        .map(|contents| {
-            contents.lines().any(|line| {
-                line.split_whitespace()
-                    .nth(1)
-                    .map(|m| m.replace("\\040", " ").trim_end_matches('/') == target)
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn dirs_config_path() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
-        .unwrap_or_default();
-    base.join("cosmic-nas-indicator").join("config")
-}
-
 /// The most recent probe result, used to color the text and fill the tooltip.
 #[derive(Debug, Clone, Default)]
 struct Status {
     connected: bool,
     /// Resolved peer address on a successful connect (gives the NAS IP).
     addr: Option<SocketAddr>,
-    /// Round-trip time of the successful TCP connect.
+    /// Time taken by the successful TCP connect (excluding DNS resolution).
     latency: Option<Duration>,
-    /// Whether the configured mount point is currently mounted.
+    /// Whether an SMB filesystem is currently mounted at the mount point.
     mounted: bool,
 }
 
+/// Resolves `host`, then tries each resolved address until one accepts a TCP
+/// connection on `port`. The whole probe is bounded by `CONNECT_TIMEOUT_SECS`.
 async fn check_nas(host: String, port: u16, mount_point: Option<String>) -> Status {
-    let start = Instant::now();
-    let result = tokio::time::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        tokio::net::TcpStream::connect((host.as_str(), port)),
-    )
-    .await;
-    let mounted = mount_point.as_deref().map(is_mounted).unwrap_or(false);
-    match result {
-        Ok(Ok(stream)) => Status {
+    let mounted = mount_point.as_deref().map(mounts::is_mounted).unwrap_or(false);
+    let probe = async {
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .ok()?
+            .collect();
+        for addr in addrs {
+            let start = Instant::now();
+            if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
+                let latency = start.elapsed();
+                return Some((stream.peer_addr().unwrap_or(addr), latency));
+            }
+        }
+        None
+    };
+    match tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), probe).await {
+        Ok(Some((addr, latency))) => Status {
             connected: true,
-            addr: stream.peer_addr().ok(),
-            latency: Some(start.elapsed()),
+            addr: Some(addr),
+            latency: Some(latency),
             mounted,
         },
         _ => Status {
@@ -310,6 +102,15 @@ struct NasIndicator {
     core: Core,
     config: Config,
     status: Status,
+    /// Sequence number handed to the most recently started probe. Probes can
+    /// overlap (the interval may be shorter than the timeout) and finish out
+    /// of order, so each result carries its sequence number.
+    next_check_seq: u64,
+    /// Sequence number of the probe whose result is currently in `status`.
+    applied_check_seq: u64,
+    /// Results from probes older than this were started against settings
+    /// that have since changed, and are discarded.
+    min_valid_check_seq: u64,
     /// The currently open right-click menu popup, if any.
     popup: Option<Id>,
     /// When true, the popup shows the settings form instead of the menu.
@@ -317,13 +118,16 @@ struct NasIndicator {
     /// Buffers for the settings form while editing.
     form: SettingsForm,
     /// Last mount/unmount error to surface to the user, if any.
-    last_error: Option<String>,
+    mount_error: Option<String>,
+    /// Last failure to write the config file, if any.
+    save_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 enum Message {
     Tick,
-    Status(Status),
+    /// A probe result, tagged with the probe's sequence number.
+    Status(u64, Status),
     /// Surface actions emitted by the hover tooltip and right-click menu
     /// (create/destroy popup surfaces).
     Surface(cosmic::surface::Action),
@@ -359,87 +163,90 @@ enum Message {
 }
 
 impl NasIndicator {
-    fn check_task(&self) -> Task<Message> {
+    fn check_task(&mut self) -> Task<Message> {
         if !self.config.is_configured() {
             return Task::none();
         }
-        let host = self.config.host.clone();
+        self.next_check_seq += 1;
+        let seq = self.next_check_seq;
+        let host = self.config.host.trim().to_string();
         let port = self.config.port;
         let mount_point = self.config.mount_point.clone();
-        cosmic::task::future(
-            async move { Message::Status(check_nas(host, port, mount_point).await) },
-        )
+        cosmic::task::future(async move {
+            Message::Status(seq, check_nas(host, port, mount_point).await)
+        })
     }
 
-    /// Runs `mount` (via pkexec when configured) for the configured share, then
-    /// re-checks status. Reports failures via `Message::MountDone`.
+    /// Runs `mount` (via pkexec when configured) for the configured share.
+    /// Reports the outcome via `Message::MountDone`, which re-checks status.
     fn mount_task(&self) -> Task<Message> {
         let (Some(source), Some(mount_point)) =
             (self.config.mount_source(), self.config.mount_point.clone())
         else {
             return Task::none();
         };
-        if !mount_cifs_available() {
-            return cosmic::task::future(async {
-                Message::MountDone(Some(
-                    "cifs-utils not installed (mount.cifs missing)".to_string(),
-                ))
-            });
+        let precondition_error = if !mounts::mount_cifs_available() {
+            Some("cifs-utils not installed (mount.cifs missing)".to_string())
+        } else if !std::path::Path::new(&mount_point).is_dir() {
+            Some(format!("mount point {mount_point} does not exist"))
+        } else {
+            None
+        };
+        if let Some(err) = precondition_error {
+            return cosmic::task::future(async move { Message::MountDone(Some(err)) });
         }
-        let options = self.config.mount_options.clone();
-        let use_pkexec = self.config.use_pkexec;
+        let spec = mounts::mount_command(
+            &source,
+            &mount_point,
+            self.config.mount_options.as_deref(),
+            self.config.use_pkexec,
+        );
         cosmic::task::future(async move {
-            let mut cmd = if use_pkexec {
-                let mut c = tokio::process::Command::new("pkexec");
-                c.arg("mount");
-                c
-            } else {
-                tokio::process::Command::new("mount")
-            };
-            cmd.arg("-t").arg("cifs").arg(&source).arg(&mount_point);
-            if let Some(opts) = options {
-                cmd.arg("-o").arg(opts);
-            }
-            Message::MountDone(run_mount_command(cmd, "mount").await)
+            Message::MountDone(mounts::run_mount_command(spec, "mount").await)
         })
     }
 
     /// Runs `umount` (via pkexec when configured) for the configured mount
-    /// point, then re-checks status. Reports failures via `Message::MountDone`.
+    /// point. Reports the outcome via `Message::MountDone`.
     fn unmount_task(&self) -> Task<Message> {
-        let Some(mount_point) = self.config.mount_point.clone() else {
+        let Some(mount_point) = self.config.mount_point.as_deref() else {
             return Task::none();
         };
-        let use_pkexec = self.config.use_pkexec;
+        let spec = mounts::unmount_command(mount_point, self.config.use_pkexec);
         cosmic::task::future(async move {
-            let mut cmd = if use_pkexec {
-                let mut c = tokio::process::Command::new("pkexec");
-                c.arg("umount");
-                c
-            } else {
-                tokio::process::Command::new("umount")
-            };
-            cmd.arg(&mount_point);
-            Message::MountDone(run_mount_command(cmd, "umount").await)
+            Message::MountDone(mounts::run_mount_command(spec, "umount").await)
         })
     }
 
-    /// Parses the settings form into the config and persists it.
+    /// Writes the config file, recording any failure for display.
+    fn save_config(&mut self) {
+        self.save_error = self
+            .config
+            .save()
+            .err()
+            .map(|e| format!("could not save settings: {e}"));
+    }
+
+    /// Parses the settings form into the config and persists it. Invalid
+    /// port or interval entries leave the previous value in place.
     fn apply_settings(&mut self) {
         self.config.host = self.form.host.trim().to_string();
-        if let Ok(port) = self.form.port.trim().parse::<u16>() {
-            if port != 0 {
-                self.config.port = port;
-            }
+        if let Some(port) = parse_port(&self.form.port) {
+            self.config.port = port;
         }
-        if let Ok(secs) = self.form.interval_secs.trim().parse::<u64>() {
-            self.config.interval_secs = secs.max(2);
+        if let Some(secs) = parse_interval(&self.form.interval_secs) {
+            self.config.interval_secs = secs;
         }
         self.config.share = non_empty(self.form.share.trim());
         self.config.mount_point = non_empty(self.form.mount_point.trim());
         self.config.mount_options = non_empty(self.form.mount_options.trim());
         self.config.use_pkexec = self.form.use_pkexec;
-        self.config.save();
+        self.save_config();
+
+        // Any probe still in flight was aimed at the old settings; ignore its
+        // result and forget the old status until the next probe reports.
+        self.min_valid_check_seq = self.next_check_seq + 1;
+        self.status = Status::default();
     }
 
     /// Task that destroys the context-menu popup if it is currently open.
@@ -451,6 +258,11 @@ impl NasIndicator {
         } else {
             Task::none()
         }
+    }
+
+    /// Errors to surface in the tooltip and menu.
+    fn errors(&self) -> impl Iterator<Item = &String> {
+        self.mount_error.iter().chain(self.save_error.iter())
     }
 
     /// One-line status summary that matches the label color: unconfigured
@@ -477,6 +289,7 @@ impl NasIndicator {
 
         if !self.config.is_configured() {
             lines.push("Right-click → Settings to configure".to_string());
+            lines.extend(self.errors().map(|err| format!("⚠ {err}")));
             return lines.join("\n");
         }
 
@@ -504,17 +317,9 @@ impl NasIndicator {
         }
 
         lines.push(format!("Checked every {}s", self.config.interval_secs));
-
-        if let Some(err) = &self.last_error {
-            lines.push(format!("⚠ {err}"));
-        }
+        lines.extend(self.errors().map(|err| format!("⚠ {err}")));
 
         lines.join("\n")
-    }
-
-    /// The effective font size currently applied to the panel label.
-    fn current_font_size(&self) -> f32 {
-        self.config.font_size.unwrap_or(DEFAULT_FONT_SIZE)
     }
 
     /// The popup body, dispatching between the settings form and the menu.
@@ -533,8 +338,6 @@ impl NasIndicator {
 
         let header = self.status_summary();
 
-        let font_label = format!("Font size: {:.0}", self.current_font_size());
-
         let mut menu = Column::new()
             .padding([8, 0])
             .push(padded_control(text::heading(header)));
@@ -546,24 +349,37 @@ impl NasIndicator {
             ))));
         }
 
-        if let Some(err) = &self.last_error {
+        for err in self.errors() {
             menu = menu.push(padded_control(
                 text::caption(format!("⚠ {err}")).class(cosmic::style::Text::Color(ORANGE)),
             ));
         }
 
         // Connect / disconnect (mount / unmount) — only when a share and mount
-        // point are configured.
+        // point are configured. Connecting is disabled while the NAS is
+        // unreachable, since the mount would only time out.
         if self.config.is_mountable() {
             menu = menu.push(padded_control(divider::horizontal::default()));
             menu = if self.status.mounted {
-                menu.push(menu_button(text::body("Disconnect (unmount)")).on_press(Message::Disconnect))
+                menu.push(
+                    menu_button(text::body("Disconnect (unmount)"))
+                        .on_press(Message::Disconnect),
+                )
             } else {
-                menu.push(menu_button(text::body("Connect (mount)")).on_press(Message::Connect))
+                menu.push(
+                    menu_button(text::body("Connect (mount)"))
+                        .on_press_maybe(self.status.connected.then_some(Message::Connect)),
+                )
             };
         }
 
-        let current = self.current_font_size();
+        // With no explicit size, libcosmic sizes the label from the panel, so
+        // there is no meaningful number to show.
+        let font_label = match self.config.font_size {
+            Some(size) => format!("Font size: {size:.0}"),
+            None => "Font size: panel default".to_string(),
+        };
+        let current = self.config.font_size.unwrap_or(DEFAULT_FONT_SIZE);
         let can_increase = current < MAX_FONT_SIZE;
         let can_decrease = current > MIN_FONT_SIZE;
 
@@ -579,7 +395,10 @@ impl NasIndicator {
                 menu_button(text::body("Decrease font size"))
                     .on_press_maybe(can_decrease.then_some(Message::FontDelta(-FONT_STEP))),
             )
-            .push(menu_button(text::body("Reset font size")).on_press(Message::FontReset))
+            .push(
+                menu_button(text::body("Reset font size"))
+                    .on_press_maybe(self.config.font_size.is_some().then_some(Message::FontReset)),
+            )
             .push(padded_control(divider::horizontal::default()))
             .push(menu_button(text::body("Exit")).on_press(Message::Exit))
             .into()
@@ -668,15 +487,18 @@ impl Application for NasIndicator {
     }
 
     fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
-        let config = Config::load();
-        let app = NasIndicator {
+        let mut app = NasIndicator {
             core,
-            config,
+            config: Config::load(),
             status: Status::default(),
+            next_check_seq: 0,
+            applied_check_seq: 0,
+            min_valid_check_seq: 0,
             popup: None,
             editing: false,
             form: SettingsForm::default(),
-            last_error: None,
+            mount_error: None,
+            save_error: None,
         };
         let initial_check = app.check_task();
         (app, initial_check)
@@ -689,8 +511,11 @@ impl Application for NasIndicator {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => self.check_task(),
-            Message::Status(status) => {
-                self.status = status;
+            Message::Status(seq, status) => {
+                if seq >= self.min_valid_check_seq && seq > self.applied_check_seq {
+                    self.applied_check_seq = seq;
+                    self.status = status;
+                }
                 Task::none()
             }
             Message::Surface(action) => cosmic::iced::Task::done(cosmic::Action::Cosmic(
@@ -704,29 +529,28 @@ impl Application for NasIndicator {
                 Task::none()
             }
             Message::FontDelta(delta) => {
-                let new_size =
-                    (self.current_font_size() + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-                self.config.font_size = Some(new_size);
-                self.config.save();
+                let current = self.config.font_size.unwrap_or(DEFAULT_FONT_SIZE);
+                self.config.font_size = Some((current + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+                self.save_config();
                 Task::none()
             }
             Message::FontReset => {
                 self.config.font_size = None;
-                self.config.save();
+                self.save_config();
                 Task::none()
             }
             Message::Connect => {
-                self.last_error = None;
+                self.mount_error = None;
                 let close = self.close_popup_task();
                 Task::batch([close, self.mount_task()])
             }
             Message::Disconnect => {
-                self.last_error = None;
+                self.mount_error = None;
                 let close = self.close_popup_task();
                 Task::batch([close, self.unmount_task()])
             }
             Message::MountDone(result) => {
-                self.last_error = result;
+                self.mount_error = result;
                 self.check_task()
             }
             Message::OpenSettings => {
