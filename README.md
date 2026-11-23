@@ -9,7 +9,9 @@ colored by status:
 - **red** — the NAS is not reachable at all
 
 Reachability is determined by attempting a TCP connection to the NAS host on
-the SMB port (445 by default) on a fixed interval. When no mount is
+the SMB port (445 by default) on a fixed interval. The share counts as
+mounted when `/proc/mounts` lists a `cifs` or `smb3` filesystem at the
+configured mount point; anything else mounted there is ignored. When no mount is
 configured (no `share`/`mount_point`), there is no "mounted" state, so the
 color is simply green when reachable and red when not.
 
@@ -60,9 +62,11 @@ from the SVG sources in `docs/screenshots/src/` via `scripts/generate-screenshot
   recent mount error).
 - **Right-click** the label for a context menu that lets you:
   - **Connect / Disconnect** — mount or unmount the configured SMB share
-    (only shown when `share` and `mount_point` are set).
+    (only shown when `share` and `mount_point` are set; Connect is disabled
+    while the NAS is unreachable).
   - **Settings…** — edit host, port, check interval, and mount options
-    directly in the popup; Save persists them to the config file.
+    directly in the popup; Save persists them to the config file. If the
+    file cannot be written, the error appears in the menu and tooltip.
   - Increase, decrease, or reset the label font size (persisted).
   - Exit the applet.
 
@@ -84,7 +88,7 @@ install it with `apt` (so the `cifs-utils` dependency is resolved
 automatically):
 
 ```sh
-sudo apt install ./cosmic-nas-indicator_1.0.0-1_amd64.deb
+sudo apt install ./cosmic-nas-indicator_1.1.0-1_amd64.deb
 ```
 
 ### From source
@@ -95,7 +99,9 @@ just install
 ```
 
 This installs the binary to `~/.local/bin` and the applet desktop entry to
-`~/.local/share/applications`.
+`~/.local/share/applications`. The installed desktop entry points at the
+binary by absolute path, since the panel's `PATH` may not include
+`~/.local/bin`.
 
 Then add it to the panel: **Settings → Desktop → Panel → Configure panel
 applets → Add applet → NAS Indicator**.
@@ -156,3 +162,26 @@ immediately.
 The Connect/Disconnect menu item only appears when both `share` and
 `mount_point` are set. Mounting CIFS shares normally requires elevated
 privileges, which is why `pkexec` is used by default.
+
+## Development
+
+```sh
+cargo test      # or: just test
+cargo clippy --all-targets -- -D warnings
+```
+
+Configuration parsing/saving and mount detection live in `src/config.rs` and
+`src/mounts.rs` and are unit-tested. CI (`.github/workflows/ci.yml`) runs
+clippy and the tests on Ubuntu for every push to `main` and every pull request.
+`libcosmic` is pinned by the committed `Cargo.lock`, not by a `rev` in
+`Cargo.toml`: other COSMIC crates in the dependency tree (e.g.
+`cosmic-panel-config`) depend on libcosmic without a `rev`, and pinning one
+side splits it into two conflicting sources. CI builds with `--locked`; upgrade
+deliberately with `cargo update -p libcosmic` and commit the new lockfile.
+
+### Releasing
+
+Bump `version` in `Cargo.toml` (and the root package entry in `Cargo.lock`),
+merge to `main`, then publish a GitHub release tagged `vX.Y.Z`. The release
+workflow (`.github/workflows/release.yml`) builds the `.deb` with `cargo deb`
+on Ubuntu 24.04 and attaches it to the release.

@@ -1,8 +1,9 @@
 /target
 
-# Never commit SMB/NAS credentials or local applet config
+# Never commit SMB/NAS credentials or local applet config. Patterns that could
+# collide with source paths are anchored to the repo root.
 .smbcredentials
 *.smbcredentials
 *.cred
-credentials
-config
+/credentials
+/config
