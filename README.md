@@ -88,7 +88,7 @@ install it with `apt` (so the `cifs-utils` dependency is resolved
 automatically):
 
 ```sh
-sudo apt install ./cosmic-nas-indicator_1.0.0-1_amd64.deb
+sudo apt install ./cosmic-nas-indicator_1.1.0-1_amd64.deb
 ```
 
 ### From source
@@ -178,3 +178,10 @@ clippy and the tests on Ubuntu for every push to `main` and every pull request.
 `cosmic-panel-config`) depend on libcosmic without a `rev`, and pinning one
 side splits it into two conflicting sources. CI builds with `--locked`; upgrade
 deliberately with `cargo update -p libcosmic` and commit the new lockfile.
+
+### Releasing
+
+Bump `version` in `Cargo.toml` (and the root package entry in `Cargo.lock`),
+merge to `main`, then publish a GitHub release tagged `vX.Y.Z`. The release
+workflow (`.github/workflows/release.yml`) builds the `.deb` with `cargo deb`
+on Ubuntu 24.04 and attaches it to the release.
